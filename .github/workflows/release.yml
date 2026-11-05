@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (e.g. v2.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore signing certificate
+        shell: pwsh
+        env:
+          CERT_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERT_BASE64)) {
+            Write-Warning 'WINDOWS_CERT_PFX_BASE64 secret is not set: the installer will be unsigned.'
+            exit 0
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:CERT_BASE64))
+          "SIGN_CERT_PATH=$path" >> $env:GITHUB_ENV
+
+      - name: Build installer and attach to release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: ./build/build-installer.ps1 -Version $env:RELEASE_TAG.TrimStart('v') -Publish
+
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force (Join-Path $env:RUNNER_TEMP 'codesign.pfx') -ErrorAction SilentlyContinue
